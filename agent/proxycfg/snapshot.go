@@ -107,14 +107,6 @@ func (c *configSnapshotMeshGateway) IsEmpty() bool {
 }
 
 type configSnapshotIngressGateway struct {
-	// Config is the associated ingress-gateway config entry that we are generating watches for.
-	Config *structs.IngressGatewayConfigEntry
-
-	// ServiceLists is a map of maps, the first key being a namespace and the
-	// second being the service ID. This is used to separate out all services by
-	// namespace in order to deal with "*" wildcard specifiers.
-	ServiceLists map[string]map[structs.ServiceID]struct{}
-
 	// Upstreams is a list of upstreams this ingress gateway should serve traffic to. This is
 	// constructed from the ingress-gateway config entry, Config, and the
 	// ServiceLists fields.
@@ -144,8 +136,7 @@ func (c *configSnapshotIngressGateway) IsEmpty() bool {
 	if c == nil {
 		return true
 	}
-	return c.Config == nil &&
-		len(c.Upstreams) == 0 &&
+	return len(c.Upstreams) == 0 &&
 		len(c.DiscoveryChain) == 0 &&
 		len(c.WatchedDiscoveryChains) == 0 &&
 		len(c.WatchedUpstreams) == 0 &&
@@ -197,9 +188,7 @@ func (s *ConfigSnapshot) Valid() bool {
 		return s.Roots != nil && (s.MeshGateway.WatchedServicesSet || len(s.MeshGateway.ServiceGroups) > 0)
 	case structs.ServiceKindIngressGateway:
 		return s.Roots != nil &&
-			s.Leaf != nil &&
-			s.IngressGateway.Config != nil &&
-			s.IngressGateway.ServiceLists != nil
+			s.Leaf != nil
 	default:
 		return false
 	}

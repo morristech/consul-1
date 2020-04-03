@@ -1760,6 +1760,11 @@ type IndexedNodeDump struct {
 	QueryMeta
 }
 
+type IndexedUpstreams struct {
+	Upstreams Upstreams
+	QueryMeta
+}
+
 // IndexedConfigEntries has its own encoding logic which differs from
 // ConfigEntryRequest as it has to send a slice of ConfigEntry.
 type IndexedConfigEntries struct {

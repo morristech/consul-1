@@ -1061,7 +1061,6 @@ func testConfigSnapshotIngressGateway(t testing.T, populateServices bool) *Confi
 	}
 	if populateServices {
 		snap.IngressGateway = configSnapshotIngressGateway{
-			Config: nil,
 			DiscoveryChain: map[string]*structs.CompiledDiscoveryChain{
 				"db": dbChain,
 			},

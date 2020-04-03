@@ -648,10 +648,8 @@ func TestState_WatchesAndUpdates(t *testing.T) {
 			stages: []verificationStage{
 				verificationStage{
 					requiredWatches: map[string]verifyWatchRequest{
-						rootsWatchID:                genVerifyRootsWatch("dc1"),
-						leafWatchID:                 genVerifyLeafWatch("ingress-gateway", "dc1"),
-						ingressGatewayConfigWatchID: genVerifyConfigEntryWatch("ingress-gateway", "ingress-gateway", "dc1"),
-						serviceListWatchID:          genVerifyListServicesWatch("dc1"),
+						rootsWatchID: genVerifyRootsWatch("dc1"),
+						leafWatchID:  genVerifyLeafWatch("ingress-gateway", "dc1"),
 					},
 					verifySnapshot: func(t testing.TB, snap *ConfigSnapshot) {
 						require.False(t, snap.Valid(), "gateway without root is not valid")

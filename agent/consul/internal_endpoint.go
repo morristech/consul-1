@@ -88,6 +88,55 @@ func (m *Internal) NodeDump(args *structs.DCSpecificRequest,
 		})
 }
 
+func (m *Internal) GatewayUpstreams(args *structs.ServiceSpecificRequest, reply *structs.IndexedUpstreams) error {
+	if done, err := m.srv.forward("Internal.GatewayUpstreams", args, args, reply); done {
+		return err
+	}
+
+	var authzContext acl.AuthorizerContext
+	authz, err := m.srv.ResolveTokenAndDefaultMeta(args.Token, &args.EnterpriseMeta, &authzContext)
+	if err != nil {
+		return err
+	}
+
+	if err := m.srv.validateEnterpriseRequest(&args.EnterpriseMeta, false); err != nil {
+		return err
+	}
+
+	if authz != nil && authz.ServiceRead(args.ServiceName, &authzContext) != acl.Allow {
+		// Just return nil, which will return an empty response (tested)
+		return nil
+	}
+
+	filter, err := bexpr.CreateFilter(args.Filter, nil, reply)
+	if err != nil {
+		return err
+	}
+
+	return m.srv.blockingQuery(
+		&args.QueryOptions,
+		&reply.QueryMeta,
+		func(ws memdb.WatchSet, state *state.Store) error {
+			index, upstreams, err := state.UpstreamsForIngressGateway(ws, args.ServiceName, &args.EnterpriseMeta)
+			if err != nil {
+				return err
+			}
+
+			reply.Index, reply.Upstreams = index, upstreams
+			if err := m.srv.filterACL(args.Token, reply); err != nil {
+				return err
+			}
+
+			raw, err := filter.Execute(reply.Upstreams)
+			if err != nil {
+				return err
+			}
+
+			reply.Upstreams = raw.(structs.Upstreams)
+			return nil
+		})
+}
+
 func (m *Internal) ServiceDump(args *structs.ServiceDumpRequest, reply *structs.IndexedCheckServiceNodes) error {
 	if done, err := m.srv.forward("Internal.ServiceDump", args, args, reply); done {
 		return err

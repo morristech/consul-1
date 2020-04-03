@@ -1702,6 +1702,24 @@ func (f *aclFilter) filterServiceList(services *structs.ServiceList) {
 	*services = ret
 }
 
+func (f *aclFilter) filterUpstreams(upstreams *structs.Upstreams) {
+	ret := make(structs.Upstreams, 0, len(*upstreams))
+	for _, u := range *upstreams {
+		var authzContext acl.AuthorizerContext
+		u.GetEnterpriseMeta().FillAuthzContext(&authzContext)
+
+		if f.authorizer.ServiceRead(u.DestinationName, &authzContext) != acl.Allow {
+			sid := u.DestinationID()
+			f.logger.Debug("dropping service from result due to ACLs", "service", sid.String())
+			continue
+		}
+
+		ret = append(ret, u)
+	}
+
+	*upstreams = ret
+}
+
 func (r *ACLResolver) filterACLWithAuthorizer(authorizer acl.Authorizer, subj interface{}) error {
 	if authorizer == nil {
 		return nil
@@ -1745,6 +1763,9 @@ func (r *ACLResolver) filterACLWithAuthorizer(authorizer acl.Authorizer, subj in
 
 	case *structs.IndexedServices:
 		filt.filterServices(v.Services, &v.EnterpriseMeta)
+
+	case *structs.Upstreams:
+		filt.filterUpstreams(v)
 
 	case *structs.IndexedSessions:
 		filt.filterSessions(&v.Sessions)

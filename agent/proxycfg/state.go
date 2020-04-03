@@ -32,7 +32,7 @@ const (
 	consulServerListWatchID            = "consul-server-list"
 	datacentersWatchID                 = "datacenters"
 	serviceResolversWatchID            = "service-resolvers"
-	ingressGatewayConfigWatchID        = "ingress-gateway-config"
+	gatewayUpstreamsWatchID            = "gateway-upstreams"
 	svcChecksWatchIDPrefix             = cachetype.ServiceHTTPChecksName + ":"
 	serviceIDPrefix                    = string(structs.UpstreamDestTypeService) + ":"
 	preparedQueryIDPrefix              = string(structs.UpstreamDestTypePreparedQuery) + ":"
@@ -459,25 +459,13 @@ func (s *state) initWatchesIngressGateway() error {
 		return err
 	}
 
-	// Watch the service's own ingress-gateway config entry
-	err = s.cache.Notify(s.ctx, cachetype.ConfigEntryName, &structs.ConfigEntryQuery{
+	// Watch the ingress-gateway's list of upstreams
+	err = s.cache.Notify(s.ctx, cachetype.GatewayUpstreamsName, &structs.ServiceSpecificRequest{
 		Datacenter:     s.source.Datacenter,
 		QueryOptions:   structs.QueryOptions{Token: s.token},
-		Kind:           structs.IngressGateway,
-		Name:           s.service,
-		EnterpriseMeta: *structs.WildcardEnterpriseMeta(),
-	}, ingressGatewayConfigWatchID, s.ch)
-	if err != nil {
-		return err
-	}
-
-	// Watch the list of all services in the datacenter.
-	err = s.cache.Notify(s.ctx, cachetype.CatalogServiceListName, &structs.DCSpecificRequest{
-		Datacenter:     s.source.Datacenter,
-		QueryOptions:   structs.QueryOptions{Token: s.token},
-		Source:         *s.source,
-		EnterpriseMeta: *structs.WildcardEnterpriseMeta(),
-	}, serviceListWatchID, s.ch)
+		ServiceName:    s.service,
+		EnterpriseMeta: s.proxyID.EnterpriseMeta,
+	}, gatewayUpstreamsWatchID, s.ch)
 	if err != nil {
 		return err
 	}
@@ -1043,46 +1031,32 @@ func (s *state) handleUpdateIngressGateway(u cache.UpdateEvent, snap *ConfigSnap
 			return fmt.Errorf("invalid type for response: %T", u.Result)
 		}
 		snap.Leaf = leaf
-	case u.CorrelationID == serviceListWatchID:
-		// Store the list of services.
-		services, ok := u.Result.(*structs.IndexedServiceList)
+	case u.CorrelationID == gatewayUpstreamsWatchID:
+		upstreams, ok := u.Result.(*structs.IndexedUpstreams)
 		if !ok {
 			return fmt.Errorf("invalid type for response: %T", u.Result)
 		}
 
-		serviceLists := make(map[string]map[structs.ServiceID]struct{})
-		for _, svc := range services.Services {
-			ns := svc.NamespaceOrDefault()
-			if _, ok := serviceLists[ns]; !ok {
-				serviceLists[ns] = make(map[structs.ServiceID]struct{})
+		watchedSvcs := make(map[string]struct{})
+		for _, u := range upstreams.Upstreams {
+			err := s.watchIngressDiscoveryChain(snap, u)
+			if err != nil {
+				return err
 			}
-			sid := svc.ToServiceID()
-			serviceLists[ns][sid] = struct{}{}
+			watchedSvcs[u.Identifier()] = struct{}{}
+
+			u.LocalBindAddress = s.address
+			if s.address == "" {
+				u.LocalBindAddress = "0.0.0.0"
+			}
 		}
+		snap.IngressGateway.Upstreams = upstreams.Upstreams
 
-		snap.IngressGateway.ServiceLists = serviceLists
-
-		// Update our discovery chain watches.
-		if err := s.resetIngressUpstreamsAndDiscoveryWatches(snap); err != nil {
-			return err
-		}
-
-	case u.CorrelationID == ingressGatewayConfigWatchID:
-		configEntry, ok := u.Result.(*structs.ConfigEntryResponse)
-		if !ok {
-			return fmt.Errorf("invalid type for response: %T", u.Result)
-		}
-
-		ingressGateway, ok := configEntry.Entry.(*structs.IngressGatewayConfigEntry)
-		if !ok {
-			return fmt.Errorf("invalid type for config entry: %T", configEntry.Entry)
-		}
-
-		snap.IngressGateway.Config = ingressGateway
-
-		// Update our discovery chain watches.
-		if err := s.resetIngressUpstreamsAndDiscoveryWatches(snap); err != nil {
-			return err
+		for id, cancelFn := range snap.IngressGateway.WatchedDiscoveryChains {
+			if _, ok := watchedSvcs[id]; !ok {
+				cancelFn()
+				delete(snap.IngressGateway.WatchedDiscoveryChains, id)
+			}
 		}
 
 	case strings.HasPrefix(u.CorrelationID, "discovery-chain:"):
@@ -1122,60 +1096,6 @@ func (s *state) handleUpdateIngressGateway(u cache.UpdateEvent, snap *ConfigSnap
 	return nil
 }
 
-func (s *state) resetIngressUpstreamsAndDiscoveryWatches(snap *ConfigSnapshot) error {
-	// Exit early if we don't have both the gateway config and service list.
-	if snap.IngressGateway.Config == nil || snap.IngressGateway.ServiceLists == nil {
-		return nil
-	}
-
-	var upstreams []structs.Upstream
-	for _, listener := range snap.IngressGateway.Config.Listeners {
-		for _, svc := range listener.Services {
-			ns := svc.NamespaceOrDefault()
-			if svc.Name == structs.WildcardSpecifier {
-				for service := range snap.IngressGateway.ServiceLists[ns] {
-					u := upstreamForIngress(snap.Address, ns, service.ID, listener.Port)
-					upstreams = append(upstreams, u)
-				}
-			} else {
-				u := upstreamForIngress(snap.Address, ns, svc.Name, listener.Port)
-				upstreams = append(upstreams, u)
-			}
-		}
-	}
-	snap.IngressGateway.Upstreams = upstreams
-
-	watchedSvcs := make(map[string]struct{})
-	for _, u := range upstreams {
-		err := s.watchIngressDiscoveryChain(snap, u)
-		if err != nil {
-			return err
-		}
-		watchedSvcs[u.Identifier()] = struct{}{}
-	}
-
-	for id, cancelFn := range snap.IngressGateway.WatchedDiscoveryChains {
-		if _, ok := watchedSvcs[id]; !ok {
-			cancelFn()
-			delete(snap.IngressGateway.WatchedDiscoveryChains, id)
-		}
-	}
-
-	return nil
-}
-
-func upstreamForIngress(address, namespace, service string, port int) structs.Upstream {
-	if address == "" {
-		address = "0.0.0.0"
-	}
-	return structs.Upstream{
-		DestinationName:      service,
-		DestinationNamespace: namespace,
-		LocalBindAddress:     address,
-		LocalBindPort:        port,
-	}
-}
-
 func (s *state) watchIngressDiscoveryChain(snap *ConfigSnapshot, u structs.Upstream) error {
 	if _, ok := snap.IngressGateway.WatchedDiscoveryChains[u.Identifier()]; ok {
 		return nil
@@ -1200,6 +1120,8 @@ func (s *state) watchIngressDiscoveryChain(snap *ConfigSnapshot, u structs.Upstr
 	return nil
 }
 
+// todo(ingress): Go back to using resetWatchesFromChain like connect proxies do after
+// adding mesh gateway logic to ingress.
 func (s *state) resetIngressWatchesFromChain(
 	id string,
 	chain *structs.CompiledDiscoveryChain,
